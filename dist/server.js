@@ -356,7 +356,7 @@ class ClaudeCodeServer {
                 // Check if Claude CLI is accessible
                 let claudeCliStatus = 'unknown';
                 try {
-                    const { stdout } = await spawnAsync('/bin/bash', [this.claudeCliPath, '--version'], { timeout: 5000 });
+                    const { stdout } = await spawnAsync(this.claudeCliPath, ['--version'], { timeout: 5000 });
                     claudeCliStatus = 'available';
                 }
                 catch (error) {
@@ -568,7 +568,7 @@ ${returnMode === 'summary' ? 'IMPORTANT: Keep your response concise and focused 
             }
             try {
                 debugLog(`[Debug] Attempting to execute Claude CLI with prompt: "${prompt}" in CWD: "${effectiveCwd}"`);
-                let claudeProcessArgs = [this.claudeCliPath, '--dangerously-skip-permissions'];
+                let claudeProcessArgs = ['--dangerously-skip-permissions'];
                 // Handle Roo mode selection if enabled and specified
                 if (useRooModes && mode) {
                     // Load room modes configuration
@@ -595,15 +595,15 @@ ${returnMode === 'summary' ? 'IMPORTANT: Keep your response concise and focused 
                 }
                 // Add the prompt
                 claudeProcessArgs.push('-p', prompt);
-                debugLog(`[Debug] Invoking /bin/bash with args: ${claudeProcessArgs.join(' ')}`);
+                debugLog(`[Debug] Invoking ${this.claudeCliPath} with args: ${claudeProcessArgs.join(' ')}`);
                 // Use retry for robust execution
                 const { stdout, stderr } = await retry(async (bail, attemptNumber) => {
                     try {
                         if (attemptNumber > 1) {
                             debugLog(`[Retry] Attempt ${attemptNumber}/${maxRetries + 1} for Claude CLI execution`);
                         }
-                        return await spawnAsync('/bin/bash', // Explicitly use /bin/bash as the command
-                        claudeProcessArgs, // Pass the script path as the first argument to bash
+                        return await spawnAsync(this.claudeCliPath, // Execute the Claude CLI binary directly
+                        claudeProcessArgs, // Pass CLI arguments
                         { timeout: executionTimeoutMs, cwd: effectiveCwd });
                     }
                     catch (err) {
