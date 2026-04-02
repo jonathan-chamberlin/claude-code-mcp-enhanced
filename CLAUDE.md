@@ -242,3 +242,15 @@ As an agent, before completing a task, verify that your work adheres to ALL stan
 11. Validation output includes count of failed tests out of total tests run
 
 If any standard is not met, fix the issue before submitting the work.
+
+## Known Issues
+
+### Claude.ai Stale MCP Session
+
+**Symptom:** All tool calls from Claude.ai return "Error occurred during tool execution" but the server is running fine (health check passes via curl, logs show no incoming requests).
+
+**Root cause:** Claude.ai caches MCP session state client-side. When sessions go stale (server restart, supergateway session cleanup after idle timeout, long gaps between tool calls), Claude.ai's tools/call requests fail before reaching the server. Initialize and tools/list still work (tools appear in UI) but execution silently fails.
+
+**Fix:** Disconnect and reconnect the MCP connector in Claude.ai → Settings → Connected Apps. Takes 10 seconds. This forces a fresh session.
+
+**Diagnostic proof:** If `tail -f /tmp/claude-code-mcp.stdout.log` shows no new lines when Claude.ai calls a tool, it's a stale session — not a server issue. Do not debug the server/supergateway/funnel.
