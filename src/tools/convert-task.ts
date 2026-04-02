@@ -1,26 +1,16 @@
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve as pathResolve } from 'node:path';
+import { resolve as pathResolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ErrorCode, McpError, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
+import { requireStringParam } from '../validation.js';
 import { spawnAsync } from '../spawn.js';
 import { CONVERTER_TIMEOUT_MS, debugLog } from '../config.js';
 
 export async function handleConvertTask(
   toolArguments: Record<string, unknown>,
 ): Promise<ServerResult> {
-  if (
-    !toolArguments ||
-    typeof toolArguments !== 'object' ||
-    !('markdownPath' in toolArguments) ||
-    typeof toolArguments.markdownPath !== 'string'
-  ) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
-      'Missing or invalid required parameter: markdownPath for convert_task_markdown tool',
-    );
-  }
-
-  const markdownPath = toolArguments.markdownPath;
+  const markdownPath = requireStringParam(toolArguments, 'markdownPath', 'convert_task_markdown');
   const outputPath =
     typeof toolArguments.outputPath === 'string' ? toolArguments.outputPath : undefined;
 
@@ -29,7 +19,7 @@ export async function handleConvertTask(
   let stderr = '';
 
   try {
-    const converterPath = pathResolve(__dirname, '../docs/task_converter.py');
+    const converterPath = pathResolve(dirname(fileURLToPath(import.meta.url)), '../docs/task_converter.py');
     const result = await spawnAsync('python3', [converterPath, '--json-output', markdownPath], {
       cwd: homedir(),
       timeout: CONVERTER_TIMEOUT_MS,

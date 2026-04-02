@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve as pathResolve } from 'node:path';
 import { ErrorCode, McpError, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
+import { requireStringParam } from '../validation.js';
 import retry from 'async-retry';
 import { spawnAsync } from '../spawn.js';
 import { loadRooModes } from '../roomodes.js';
@@ -14,24 +15,75 @@ import {
   type ClaudeCodeArgs,
 } from '../config.js';
 
+function resolveWorkingDirectory(workFolder?: string): string {
+  if (typeof workFolder !== 'string') {
+    return homedir();
+  }
+  const resolved = pathResolve(workFolder);
+  if (existsSync(resolved)) {
+    debugLog(`[Debug] Using workFolder as CWD: ${resolved}`);
+    return resolved;
+  }
+  debugLog(`[Warning] Specified workFolder does not exist: ${resolved}. Using default.`);
+  return homedir();
+}
+
+function buildBoomerangPrompt(
+  prompt: string,
+  parentTaskId: string | undefined,
+  returnMode: 'summary' | 'full',
+  taskDescription: string | undefined,
+): string {
+  if (!parentTaskId) {
+    return prompt;
+  }
+  const taskContext = `
+# Boomerang Task
+${taskDescription ? `## Task Description\n${taskDescription}\n\n` : ''}## Parent Task ID
+${parentTaskId}
+
+## Return Instructions
+You are part of a larger workflow. After completing your task, you should ${returnMode === 'summary' ? 'provide a BRIEF SUMMARY of the results' : 'return your FULL RESULTS'}.
+
+${returnMode === 'summary' ? 'IMPORTANT: Keep your response concise and focused on key findings/changes only!' : ''}
+
+---
+
+`;
+  debugLog(`[Debug] Prepended boomerang task context to prompt`);
+  return taskContext + prompt;
+}
+
+function buildCliArgs(prompt: string, mode?: string): string[] {
+  // Required: MCP server runs non-interactively; Claude CLI needs this to execute without user prompts
+  const args: string[] = ['--dangerously-skip-permissions'];
+
+  if (USE_ROO_MODES && mode) {
+    const roomodes = loadRooModes();
+    if (roomodes?.customModes) {
+      const selectedMode = roomodes.customModes.find((m) => m.slug === mode);
+      if (selectedMode) {
+        debugLog(`[Debug] Found Roo mode configuration for: ${mode}`);
+        const modeArgs = ['--role', selectedMode.roleDefinition];
+        if (selectedMode.apiConfiguration?.modelId) {
+          modeArgs.push('--model', selectedMode.apiConfiguration.modelId);
+        }
+        return [...args, ...modeArgs, '-p', prompt];
+      } else {
+        debugLog(`[Warning] Specified Roo mode not found: ${mode}`);
+      }
+    }
+  }
+
+  return [...args, '-p', prompt];
+}
+
 export async function handleClaudeCode(
   toolArguments: Record<string, unknown>,
   claudeCliPath: string,
 ): Promise<ServerResult> {
   // --- Validate and extract args ---
-  if (
-    !toolArguments ||
-    typeof toolArguments !== 'object' ||
-    !('prompt' in toolArguments) ||
-    typeof toolArguments.prompt !== 'string'
-  ) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
-      'Missing or invalid required parameter: prompt (must be a string) for claude_code tool',
-    );
-  }
-
-  let prompt: string = toolArguments.prompt;
+  const rawPrompt = requireStringParam(toolArguments, 'prompt', 'claude_code');
   const parentTaskId =
     typeof toolArguments.parentTaskId === 'string' ? toolArguments.parentTaskId : undefined;
   const returnMode: 'summary' | 'full' =
@@ -45,58 +97,13 @@ export async function handleClaudeCode(
   if (taskDescription) debugLog(`[Debug] Task description: ${taskDescription}`);
   if (mode) debugLog(`[Debug] Using Roo mode: ${mode}`);
 
-  // --- Resolve working directory ---
-  let effectiveCwd = homedir();
-  if (typeof toolArguments.workFolder === 'string') {
-    const resolved = pathResolve(toolArguments.workFolder);
-    if (existsSync(resolved)) {
-      effectiveCwd = resolved;
-      debugLog(`[Debug] Using workFolder as CWD: ${effectiveCwd}`);
-    } else {
-      debugLog(`[Warning] Specified workFolder does not exist: ${resolved}. Using default.`);
-    }
-  }
+  const effectiveCwd = resolveWorkingDirectory(
+    typeof toolArguments.workFolder === 'string' ? toolArguments.workFolder : undefined,
+  );
 
-  // --- Prepend boomerang context ---
-  if (parentTaskId) {
-    const taskContext = `
-# Boomerang Task
-${taskDescription ? `## Task Description\n${taskDescription}\n\n` : ''}
-## Parent Task ID
-${parentTaskId}
+  const prompt = buildBoomerangPrompt(rawPrompt, parentTaskId, returnMode, taskDescription);
 
-## Return Instructions
-You are part of a larger workflow. After completing your task, you should ${returnMode === 'summary' ? 'provide a BRIEF SUMMARY of the results' : 'return your FULL RESULTS'}.
-
-${returnMode === 'summary' ? 'IMPORTANT: Keep your response concise and focused on key findings/changes only!' : ''}
-
----
-
-`;
-    prompt = taskContext + prompt;
-    debugLog(`[Debug] Prepended boomerang task context to prompt`);
-  }
-
-  // --- Build CLI args ---
-  const claudeProcessArgs = ['--dangerously-skip-permissions'];
-
-  if (USE_ROO_MODES && mode) {
-    const roomodes = loadRooModes();
-    if (roomodes?.customModes) {
-      const selectedMode = roomodes.customModes.find((m) => m.slug === mode);
-      if (selectedMode) {
-        debugLog(`[Debug] Found Roo mode configuration for: ${mode}`);
-        claudeProcessArgs.push('--role', selectedMode.roleDefinition);
-        if (selectedMode.apiConfiguration?.modelId) {
-          claudeProcessArgs.push('--model', selectedMode.apiConfiguration.modelId);
-        }
-      } else {
-        debugLog(`[Warning] Specified Roo mode not found: ${mode}`);
-      }
-    }
-  }
-
-  claudeProcessArgs.push('-p', prompt);
+  const claudeProcessArgs = buildCliArgs(prompt, mode);
   debugLog(`[Debug] Invoking ${claudeCliPath} with args: ${claudeProcessArgs.join(' ')}`);
 
   // --- Execute with retry ---
