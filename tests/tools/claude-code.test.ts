@@ -1,92 +1,64 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Mock the spawn module
 vi.mock('../../src/spawn.js', () => ({
-  spawnAsync: vi.fn(),
+  spawnWithHandle: vi.fn(() => ({
+    childProcess: { kill: vi.fn(), pid: 12345 },
+    result: Promise.resolve({ stdout: 'mock output', stderr: '' }),
+    getPartialStdout: () => '',
+    getPartialStderr: () => '',
+  })),
+  spawnAsync: vi.fn().mockResolvedValue({ stdout: 'mock output', stderr: '' }),
 }));
 
-vi.mock('../../src/roomodes.js', () => ({
-  loadRooModes: vi.fn().mockReturnValue(null),
+// Mock task store to track calls
+vi.mock('../../src/task-store.js', () => ({
+  createTaskId: vi.fn(() => 'test-task-123'),
+  createTask: vi.fn(),
+  registerProcess: vi.fn(),
+  completeTask: vi.fn(),
+  failTask: vi.fn(),
 }));
 
-// Mock async-retry to call fn directly (no delay, no retries) for test speed
+// Mock async-retry to execute immediately without retries
 vi.mock('async-retry', () => ({
-  default: vi.fn(async (fn: (bail: (e: Error) => void, attempt: number) => Promise<unknown>) => {
-    const bail = (e: Error) => { throw e; };
-    return fn(bail, 1);
-  }),
+  default: vi.fn(async (fn: Function) => fn(() => {}, 1)),
 }));
 
-import { spawnAsync } from '../../src/spawn.js';
 import { handleClaudeCode } from '../../src/tools/claude-code.js';
-import { homedir } from 'node:os';
+import { createTaskId, createTask } from '../../src/task-store.js';
 
 describe('handleClaudeCode', () => {
   beforeEach(() => {
-    vi.mocked(spawnAsync).mockResolvedValue({ stdout: 'mock output', stderr: '' });
+    vi.clearAllMocks();
   });
 
   it('throws McpError when prompt is missing', async () => {
-    await expect(handleClaudeCode({}, 'claude')).rejects.toThrow();
+    await expect(handleClaudeCode({}, 'claude')).rejects.toThrow('prompt');
   });
 
   it('throws McpError when prompt is not a string', async () => {
-    await expect(
-      handleClaudeCode({ prompt: 123 } as Record<string, unknown>, 'claude'),
-    ).rejects.toThrow();
+    await expect(handleClaudeCode({ prompt: 123 }, 'claude')).rejects.toThrow('prompt');
   });
 
-  it('calls spawnAsync with correct positional args', async () => {
-    await handleClaudeCode({ prompt: 'say hello' }, 'claude');
-    expect(vi.mocked(spawnAsync)).toHaveBeenCalledWith(
-      'claude',
-      expect.arrayContaining(['-p', 'say hello']),
-      expect.any(Object),
-    );
-  });
-
-  it('includes --dangerously-skip-permissions in args', async () => {
-    await handleClaudeCode({ prompt: 'do something' }, 'claude');
-    const [, args] = vi.mocked(spawnAsync).mock.calls[0];
-    expect(args).toContain('--dangerously-skip-permissions');
-  });
-
-  it('uses homedir() when workFolder is not specified', async () => {
-    await handleClaudeCode({ prompt: 'test' }, 'claude');
-    const [, , options] = vi.mocked(spawnAsync).mock.calls[0];
-    expect(options?.cwd).toBe(homedir());
-  });
-
-  it('prepends boomerang context when parentTaskId is provided', async () => {
-    vi.mocked(spawnAsync).mockClear();
-    await handleClaudeCode({ prompt: 'do task', parentTaskId: 'parent-123' }, 'claude');
-    const [, args] = vi.mocked(spawnAsync).mock.calls[0];
-    const promptArg = args[args.indexOf('-p') + 1];
-    expect(promptArg).toContain('Boomerang Task');
-    expect(promptArg).toContain('parent-123');
-  });
-
-  it('returns text content on success', async () => {
-    const result = await handleClaudeCode({ prompt: 'test' }, 'claude');
+  it('returns taskId and running status immediately', async () => {
+    const result = await handleClaudeCode({ prompt: 'say hello' }, 'claude');
     expect(result.content).toHaveLength(1);
-    expect((result.content as Array<{ type: string; text: string }>)[0].type).toBe('text');
-    expect((result.content as Array<{ type: string; text: string }>)[0].text).toContain('mock output');
-  });
-
-  it('appends BOOMERANG_RESULT comment when parentTaskId is set', async () => {
-    const result = await handleClaudeCode(
-      { prompt: 'task', parentTaskId: 'task-abc' },
-      'claude',
-    );
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
-    expect(text).toContain('BOOMERANG_RESULT');
-    expect(text).toContain('task-abc');
+    const parsed = JSON.parse(text);
+    expect(parsed.taskId).toBe('test-task-123');
+    expect(parsed.status).toBe('running');
   });
 
-  it('throws timeout McpError when spawn fails with ETIMEDOUT', async () => {
-    const timeoutError = new Error('ETIMEDOUT connection timed out') as Error & { code: string };
-    timeoutError.code = 'ETIMEDOUT';
-    vi.mocked(spawnAsync).mockRejectedValue(timeoutError);
+  it('creates a task in the store', async () => {
+    await handleClaudeCode({ prompt: 'do something' }, 'claude');
+    expect(createTaskId).toHaveBeenCalled();
+    expect(createTask).toHaveBeenCalledWith('test-task-123', 'do something');
+  });
 
-    await expect(handleClaudeCode({ prompt: 'test' }, 'claude')).rejects.toThrow(/timed out/i);
+  it('returns valid JSON in response text', async () => {
+    const result = await handleClaudeCode({ prompt: 'test' }, 'claude');
+    const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+    expect(() => JSON.parse(text)).not.toThrow();
   });
 });

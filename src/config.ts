@@ -14,12 +14,16 @@ export const SHUTDOWN_TIMEOUT_MS = 10_000;
 export const SHUTDOWN_POLL_MS = 100;
 export const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 export const CONVERTER_TIMEOUT_MS = 30_000;
+export const TASK_TTL_MS = parseInt(process.env.MCP_TASK_TTL_MS || '1800000', 10);
+export const TASK_CLEANUP_INTERVAL_MS = 300_000;
+export const TASK_PARTIAL_OUTPUT_LIMIT = 10_000;
 
 // Tool name constants
 export const TOOL_NAMES = {
   HEALTH: 'health',
   CLAUDE_CODE: 'claude_code',
   CONVERT_TASK: 'convert_task_markdown',
+  GET_TASK_RESULT: 'get_task_result',
 } as const;
 
 export type ToolName = typeof TOOL_NAMES[keyof typeof TOOL_NAMES];

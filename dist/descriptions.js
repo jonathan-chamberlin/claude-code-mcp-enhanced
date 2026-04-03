@@ -1,5 +1,4 @@
 // Claude Code tool description — separated to keep tool schema definitions scannable
-
 export const CLAUDE_CODE_DESCRIPTION = `ASYNC Claude Code Agent for code, file, Git, and terminal operations via Claude CLI.
 
 IMPORTANT — THIS TOOL IS ASYNCHRONOUS:
@@ -29,7 +28,6 @@ Prompt tips:
 2. Set workFolder to the project path, then use relative paths.
 3. For analysis only, state "no file modifications" in your prompt.
 4. For task orchestration, use parentTaskId and returnMode: "summary".`;
-
 export const GET_TASK_RESULT_DESCRIPTION = `Poll for the result of an async claude_code task.
 
 Returns the current status and output of a task started by claude_code.

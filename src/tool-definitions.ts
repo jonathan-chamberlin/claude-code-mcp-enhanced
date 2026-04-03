@@ -1,5 +1,5 @@
-import { CLAUDE_CODE_DESCRIPTION } from './descriptions.js';
-export { CLAUDE_CODE_DESCRIPTION } from './descriptions.js';
+import { CLAUDE_CODE_DESCRIPTION, GET_TASK_RESULT_DESCRIPTION } from './descriptions.js';
+export { CLAUDE_CODE_DESCRIPTION, GET_TASK_RESULT_DESCRIPTION } from './descriptions.js';
 
 export const TOOL_DEFINITIONS = [
   {
@@ -70,6 +70,20 @@ export const TOOL_DEFINITIONS = [
         },
       },
       required: ['prompt'],
+    },
+  },
+  {
+    name: 'get_task_result',
+    description: GET_TASK_RESULT_DESCRIPTION,
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        taskId: {
+          type: 'string',
+          description: 'The task ID returned by claude_code when the task was started.',
+        },
+      },
+      required: ['taskId'],
     },
   },
 ];

@@ -1,37 +1,32 @@
 import { spawn } from 'node:child_process';
 import { HEARTBEAT_INTERVAL_MS, debugLog } from './config.js';
-/**
- * Execute a command asynchronously with heartbeat progress reporting.
- * Sends heartbeat messages to stderr at the configured interval to keep
- * the MCP connection alive during long-running operations.
- */
-export async function spawnAsync(command, args, options) {
-    return new Promise((resolve, reject) => {
-        debugLog(`[Spawn] Running command: ${command} ${args.join(' ')}`);
-        const child = spawn(command, args, {
-            shell: false,
-            timeout: options?.timeout,
-            cwd: options?.cwd,
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        let stdout = '';
-        let stderr = '';
-        const executionStartTime = Date.now();
-        let heartbeatCounter = 0;
-        const progressReporter = setInterval(() => {
-            heartbeatCounter++;
-            const elapsedSeconds = Math.floor((Date.now() - executionStartTime) / 1000);
-            const heartbeatMessage = `[Progress] Claude Code execution in progress: ${elapsedSeconds}s elapsed (heartbeat #${heartbeatCounter})`;
-            console.error(heartbeatMessage);
-            debugLog(heartbeatMessage);
-        }, HEARTBEAT_INTERVAL_MS);
-        child.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-        child.stderr.on('data', (data) => {
-            stderr += data.toString();
-            debugLog(`[Spawn Stderr Chunk] ${data.toString()}`);
-        });
+export function spawnWithHandle(command, args, options) {
+    debugLog(`[Spawn] Running command: ${command} ${args.join(' ')}`);
+    const child = spawn(command, args, {
+        shell: false,
+        timeout: options?.timeout,
+        cwd: options?.cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const executionStartTime = Date.now();
+    let heartbeatCounter = 0;
+    const progressReporter = setInterval(() => {
+        heartbeatCounter++;
+        const elapsedSeconds = Math.floor((Date.now() - executionStartTime) / 1000);
+        const heartbeatMessage = `[Progress] Claude Code execution in progress: ${elapsedSeconds}s elapsed (heartbeat #${heartbeatCounter})`;
+        console.error(heartbeatMessage);
+        debugLog(heartbeatMessage);
+    }, HEARTBEAT_INTERVAL_MS);
+    child.stdout.on('data', (data) => {
+        stdout += data.toString();
+    });
+    child.stderr.on('data', (data) => {
+        stderr += data.toString();
+        debugLog(`[Spawn Stderr Chunk] ${data.toString()}`);
+    });
+    const result = new Promise((resolve, reject) => {
         child.on('error', (error) => {
             clearInterval(progressReporter);
             debugLog(`[Spawn Error Event] Full error object:`, error);
@@ -57,4 +52,17 @@ export async function spawnAsync(command, args, options) {
             }
         });
     });
+    return {
+        childProcess: child,
+        result,
+        getPartialStdout: () => stdout,
+        getPartialStderr: () => stderr,
+    };
+}
+/**
+ * Execute a command asynchronously with heartbeat progress reporting.
+ * Thin wrapper around spawnWithHandle for backward compatibility.
+ */
+export async function spawnAsync(command, args, options) {
+    return spawnWithHandle(command, args, options).result;
 }

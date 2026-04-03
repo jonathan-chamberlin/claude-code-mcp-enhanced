@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { TOOL_DEFINITIONS } from '../src/tool-definitions.js';
 
 describe('TOOL_DEFINITIONS', () => {
-  it('has exactly 3 tools', () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(3);
+  it('has exactly 4 tools', () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(4);
   });
 
   it('each tool has name, description, and inputSchema', () => {
@@ -30,5 +30,11 @@ describe('TOOL_DEFINITIONS', () => {
     const convertTask = TOOL_DEFINITIONS.find((t) => t.name === 'convert_task_markdown');
     expect(convertTask).toBeDefined();
     expect(convertTask!.inputSchema.required).toEqual(['markdownPath']);
+  });
+
+  it('get_task_result has required: [taskId]', () => {
+    const tool = TOOL_DEFINITIONS.find(t => t.name === 'get_task_result');
+    expect(tool).toBeDefined();
+    expect(tool!.inputSchema.required).toEqual(['taskId']);
   });
 });

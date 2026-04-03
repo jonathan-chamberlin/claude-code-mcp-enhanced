@@ -4,15 +4,21 @@ import { resolve as pathResolve } from 'node:path';
 import { ErrorCode, McpError, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
 import { requireStringParam } from '../validation.js';
 import retry from 'async-retry';
-import { spawnAsync } from '../spawn.js';
+import { spawnWithHandle } from '../spawn.js';
 import { loadRooModes } from '../roomodes.js';
+import {
+  createTaskId,
+  createTask,
+  registerProcess,
+  completeTask,
+  failTask,
+} from '../task-store.js';
 import {
   USE_ROO_MODES,
   EXECUTION_TIMEOUT_MS,
   MAX_RETRIES,
   RETRY_DELAY_MS,
   debugLog,
-  type ClaudeCodeArgs,
 } from '../config.js';
 
 function resolveWorkingDirectory(workFolder?: string): string {
@@ -78,11 +84,85 @@ function buildCliArgs(prompt: string, mode?: string): string[] {
   return [...args, '-p', prompt];
 }
 
+function executeInBackground(
+  taskId: string,
+  claudeCliPath: string,
+  claudeProcessArgs: string[],
+  effectiveCwd: string,
+  parentTaskId: string | undefined,
+  returnMode: 'summary' | 'full',
+  taskDescription: string | undefined,
+): void {
+  const run = async () => {
+    try {
+      const { stdout } = await retry(
+        async (bail: (err: Error) => void, attemptNumber: number) => {
+          try {
+            if (attemptNumber > 1) {
+              debugLog(`[Retry] Attempt ${attemptNumber}/${MAX_RETRIES + 1} for Claude CLI execution`);
+            }
+            const handle = spawnWithHandle(claudeCliPath, claudeProcessArgs, {
+              timeout: EXECUTION_TIMEOUT_MS,
+              cwd: effectiveCwd,
+            });
+            registerProcess(taskId, handle.childProcess);
+            return await handle.result;
+          } catch (err: unknown) {
+            const error = err as Error;
+            debugLog(`[Retry] Error during attempt ${attemptNumber}/${MAX_RETRIES + 1}: ${error.message}`);
+
+            const isTransient =
+              error.message.includes('ECONNRESET') ||
+              error.message.includes('ETIMEDOUT') ||
+              error.message.includes('ECONNREFUSED') ||
+              error.message.includes('429') ||
+              error.message.includes('500');
+
+            if (!isTransient) {
+              debugLog(`[Retry] Non-retryable error. Bailing out.`);
+              bail(error);
+              return { stdout: '', stderr: '' };
+            }
+            throw err;
+          }
+        },
+        {
+          retries: MAX_RETRIES,
+          minTimeout: RETRY_DELAY_MS,
+          onRetry: (err: Error, attempt: number) => {
+            console.error(`[Progress] Retry attempt ${attempt}/${MAX_RETRIES} due to: ${err.message}`);
+          },
+        },
+      );
+
+      let processedOutput = stdout;
+      if (parentTaskId) {
+        const boomerangInfo = {
+          parentTaskId,
+          returnMode,
+          taskDescription: taskDescription || 'Unknown task',
+          completed: new Date().toISOString(),
+        };
+        processedOutput += `\n\n<!-- BOOMERANG_RESULT ${JSON.stringify(boomerangInfo)} -->`;
+      }
+
+      completeTask(taskId, processedOutput, '');
+    } catch (error: unknown) {
+      const err = error as Error & { stderr?: string; stdout?: string };
+      let errorMessage = err.message || 'Unknown error';
+      if (err.stderr) errorMessage += `\nStderr: ${err.stderr}`;
+      if (err.stdout) errorMessage += `\nStdout: ${err.stdout}`;
+      failTask(taskId, errorMessage, err.stdout || '', err.stderr || '');
+    }
+  };
+
+  void run();
+}
+
 export async function handleClaudeCode(
   toolArguments: Record<string, unknown>,
   claudeCliPath: string,
 ): Promise<ServerResult> {
-  // --- Validate and extract args ---
   const rawPrompt = requireStringParam(toolArguments, 'prompt', 'claude_code');
   const parentTaskId =
     typeof toolArguments.parentTaskId === 'string' ? toolArguments.parentTaskId : undefined;
@@ -102,84 +182,27 @@ export async function handleClaudeCode(
   );
 
   const prompt = buildBoomerangPrompt(rawPrompt, parentTaskId, returnMode, taskDescription);
-
   const claudeProcessArgs = buildCliArgs(prompt, mode);
-  debugLog(`[Debug] Invoking ${claudeCliPath} with args: ${claudeProcessArgs.join(' ')}`);
 
-  // --- Execute with retry ---
-  try {
-    const { stdout } = await retry(
-      async (bail: (err: Error) => void, attemptNumber: number) => {
-        try {
-          if (attemptNumber > 1) {
-            debugLog(`[Retry] Attempt ${attemptNumber}/${MAX_RETRIES + 1} for Claude CLI execution`);
-          }
-          return await spawnAsync(claudeCliPath, claudeProcessArgs, {
-            timeout: EXECUTION_TIMEOUT_MS,
-            cwd: effectiveCwd,
-          });
-        } catch (err: unknown) {
-          const error = err as Error;
-          debugLog(`[Retry] Error during attempt ${attemptNumber}/${MAX_RETRIES + 1}: ${error.message}`);
+  const taskId = createTaskId();
+  createTask(taskId, rawPrompt);
 
-          const isTransient =
-            error.message.includes('ECONNRESET') ||
-            error.message.includes('ETIMEDOUT') ||
-            error.message.includes('ECONNREFUSED') ||
-            error.message.includes('429') ||
-            error.message.includes('500');
+  debugLog(`[Debug] Starting async task ${taskId}, invoking ${claudeCliPath}`);
 
-          if (!isTransient) {
-            debugLog(`[Retry] Non-retryable error. Bailing out.`);
-            bail(error);
-            return { stdout: '', stderr: '' };
-          }
-          throw err;
-        }
-      },
-      {
-        retries: MAX_RETRIES,
-        minTimeout: RETRY_DELAY_MS,
-        onRetry: (err: Error, attempt: number) => {
-          console.error(`[Progress] Retry attempt ${attempt}/${MAX_RETRIES} due to: ${err.message}`);
-        },
-      },
-    );
+  executeInBackground(
+    taskId,
+    claudeCliPath,
+    claudeProcessArgs,
+    effectiveCwd,
+    parentTaskId,
+    returnMode,
+    taskDescription,
+  );
 
-    // --- Build output ---
-    let processedOutput = stdout;
-
-    if (parentTaskId) {
-      const boomerangInfo = {
-        parentTaskId,
-        returnMode,
-        taskDescription: taskDescription || 'Unknown task',
-        completed: new Date().toISOString(),
-      };
-      processedOutput += `\n\n<!-- BOOMERANG_RESULT ${JSON.stringify(boomerangInfo)} -->`;
-      debugLog(`[Debug] Added boomerang marker for parent task: ${parentTaskId}`);
-    }
-
-    return { content: [{ type: 'text', text: processedOutput }] };
-  } catch (error: unknown) {
-    const err = error as Error & { signal?: string; code?: string; stderr?: string; stdout?: string };
-    debugLog('[Error] Error executing Claude CLI:', err);
-
-    let errorMessage = err.message || 'Unknown error';
-    if (err.stderr) errorMessage += `\nStderr: ${err.stderr}`;
-    if (err.stdout) errorMessage += `\nStdout: ${err.stdout}`;
-
-    if (
-      err.signal === 'SIGTERM' ||
-      err.message?.includes('ETIMEDOUT') ||
-      err.code === 'ETIMEDOUT'
-    ) {
-      throw new McpError(
-        ErrorCode.InternalError,
-        `Claude CLI command timed out after ${EXECUTION_TIMEOUT_MS / 1000}s. Details: ${errorMessage}`,
-      );
-    }
-
-    throw new McpError(ErrorCode.InternalError, `Claude CLI execution failed: ${errorMessage}`);
-  }
+  return {
+    content: [{
+      type: 'text',
+      text: JSON.stringify({ taskId, status: 'running' }),
+    }],
+  };
 }

@@ -13,9 +13,11 @@ import packageJson from '../package.json' with { type: 'json' };
 import { TOOL_NAMES, SHUTDOWN_TIMEOUT_MS, SHUTDOWN_POLL_MS, debugLog } from './config.js';
 import { findClaudeCli } from './cli.js';
 import { initRooModesWatcher } from './roomodes.js';
+import { startCleanupTimer, stopCleanupTimer, killAllRunningTasks } from './task-store.js';
 import { handleHealth } from './tools/health.js';
 import { handleConvertTask } from './tools/convert-task.js';
 import { handleClaudeCode } from './tools/claude-code.js';
+import { handleGetTaskResult } from './tools/get-task-result.js';
 import { CLAUDE_CODE_DESCRIPTION, TOOL_DEFINITIONS } from './tool-definitions.js';
 
 // Initialize optional .roomodes file watcher
@@ -55,6 +57,7 @@ class ClaudeCodeServer {
 
     this.setupToolHandlers();
     this.setupShutdown();
+    startCleanupTimer();
   }
 
   private setupToolHandlers(): void {
@@ -82,6 +85,9 @@ class ClaudeCodeServer {
             case TOOL_NAMES.CLAUDE_CODE:
               return handleClaudeCode(toolArguments, this.claudeCliPath);
 
+            case TOOL_NAMES.GET_TASK_RESULT:
+              return handleGetTaskResult(toolArguments);
+
             default:
               throw new McpError(ErrorCode.MethodNotFound, `Tool ${toolName} not found`);
           }
@@ -95,6 +101,8 @@ class ClaudeCodeServer {
 
     const handleShutdown = async (signal: string) => {
       console.error(`[Shutdown] Received ${signal}. Graceful shutdown initiated.`);
+      stopCleanupTimer();
+      killAllRunningTasks();
 
       if (this.activeRequests.size > 0) {
         console.error(`[Shutdown] Waiting for ${this.activeRequests.size} active requests...`);
